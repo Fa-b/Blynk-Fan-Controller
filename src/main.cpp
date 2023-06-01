@@ -15,7 +15,7 @@
 #define PWM_RESOLUTION 1023  // 10 bit
 #define SAMPLE_INTERVAL 100  // 100 milliseconds
 #define SAMPLE_COUNT 8       // 32 samples
-#define LOOP_INTERVAL 10000   // 10 seconds
+#define LOOP_INTERVAL 5000   // 5 seconds
 
 std::map<int, String> weekdays = {
     {1, "Monday"},
@@ -51,12 +51,15 @@ BlynkWifi Blynk(_blynkTransport);
 
 // lib instances
 WidgetRTC rtc;
-Ticker updater;
+Ticker adc_updater;
+Ticker scheduler;
 
 // Global vars
 int speed = 0;
 unsigned int avg_current = 0;
 int state = 0;
+
+TimeInputParam *schedule;
 
 int day_of_week;
 int cur_day;
@@ -113,8 +116,8 @@ BLYNK_CONNECTED() {
 
 
     // Don't do this when updates are found
-    updater.once_ms(SAMPLE_INTERVAL, measure_ADC);
-    updater.once_ms(LOOP_INTERVAL, time_loop);
+    adc_updater.once_ms(SAMPLE_INTERVAL, measure_ADC);
+    scheduler.once_ms(LOOP_INTERVAL, time_loop);
 }
 
 void loop() {
@@ -135,65 +138,7 @@ BLYNK_WRITE(V3) {
 }
 
 BLYNK_WRITE(V2) {  // Time Input as Schedule see here: https://community.blynk.cc/t/automatic-scheduler-esp-01-with-4-time-input-widgets/10658
-    static bool active = false;
-    TimeInputParam t(param);
-
-    if(cur_day != day() || cur_month != month() || cur_year != year()) {
-        day_of_week = weekday() == 1?7:weekday() - 1;
-        cur_day = day();
-        cur_month = month();
-        cur_year = year();
-        
-        sprintf(Date, "%02d/%02d/%04d",  cur_day, cur_month, cur_year);
-    }
-
-    //DEBUG_PRINTF("Checking schedule for %s %s:", weekdays[weekday() + dayadjustment].c_str(), Date);
-    if(t.isWeekdaySelected(day_of_week)) { //Time library starts week on Sunday, Blynk on Monday
-        //DEBUG_PRINTLN("\tACTIVE today!");
-        /*if (t.hasStartTime()) { // Process start time
-            DEBUG_PRINTF("\tStart: %02d:%02d:%02d", t.getStartHour(), t.getStartMinute(), t.getStartSecond());
-        }
-        if (t.hasStopTime()) { // Process stop time
-            DEBUG_PRINTF("\tStop: %02d:%02d:%02d", t.getStopHour(), t.getStopMinute(), t.getStopSecond());
-        }*/
-
-        // DEBUG_PRINTLN(String("Time zone offset: ") + t.getTZ_Offset()); // Get timezone offset (in seconds)
-
-        /*DEBUG_PRINTLN("Days of week:");
-        daysstring[0] = '\0';  // clear the string
-        for (int i = 1; i <= 7; i++) {  // Process weekdays (1. Mon, 2. Tue, 3. Wed, ...)
-            if (t.isWeekdaySelected(i)) {
-                sprintf(daysstring, "%s%s, ", daysstring, weekdays[i].c_str());
-            }
-        } 
-        DEBUG_PRINTLN(daysstring);*/
-        nowseconds = ((hour() * 3600) + (minute() * 60) + second());
-        startsecondswd = (t.getStartHour() * 3600) + (t.getStartMinute() * 60) + t.getStartSecond();
-        stopsecondswd = (t.getStopHour() * 3600) + (t.getStopMinute() * 60) + t.getStopSecond();
-        BlynkTime now = BlynkTime(nowseconds);
-        if(nowseconds >= startsecondswd && nowseconds < stopsecondswd) {
-            if(!active) {
-                active = true;
-                DEBUG_PRINTF("\tSTARTED: %s %s at %02d:%02d:%02d", weekdays[day_of_week].c_str(), Date, now.hour(), now.minute(), now.second());
-                setLED(1);
-            } /*else {
-                BlynkTime stopping = BlynkTime(stopsecondswd - nowseconds);
-                DEBUG_PRINTF("\tStopping in %d hours %d minutes and %d seconds.", stopping.hour(), stopping.minute(), stopping.second());
-            }*/
-        } else if(active && nowseconds > stopsecondswd) {
-            active = false;
-            DEBUG_PRINTF("\tSTOPPED: %s %s at %02d:%02d:%02d", weekdays[day_of_week].c_str(), Date, now.hour(), now.minute(), now.second());
-            setLED(0);          
-        } /*else if(nowseconds < startsecondswd) {
-            BlynkTime running_before = BlynkTime(startsecondswd - nowseconds);
-            DEBUG_PRINTF("\tRunning in %d hours %d minutes and %d seconds.", running_before.hour(), running_before.minute(), running_before.second());
-        } else {
-            BlynkTime running_after = BlynkTime(nowseconds - stopsecondswd);
-            DEBUG_PRINTF("\tRan %d hours %d minutes and %d seconds ago.", running_after.hour(), running_after.minute(), running_after.second());
-        }*/
-    } else {
-        //DEBUG_PRINTLN("\tINACTIVE today");
-    }
+    schedule = new TimeInputParam(param);
 }
 
 static void setLED(int value) {
@@ -212,17 +157,72 @@ static void measure_ADC() {
     if (n_samples++ >= SAMPLE_COUNT) {
         n_samples = 0;
         // Fix Android scaling bug
-        Blynk.virtualWrite(V1, (int)(avg_current * ((float)1500 / 1023)));
-        Blynk.virtualWrite(V2, state ? ((MAX_POWERCORRECTION_PERCENT * avg_current) / 1023) : 0);
+        Blynk.virtualWrite(V1, (int)(avg_current * ((float)MAX_MEASURE_HARDWARE_CURRENT_mA / 1023)));
     }
 
-    updater.once_ms(SAMPLE_INTERVAL, measure_ADC);
+    adc_updater.once_ms(SAMPLE_INTERVAL, measure_ADC);
 }
 
 static void time_loop() {        // check if schedule should run today
+    static bool active = false;
     if(year() != 1970){
-        Blynk.syncVirtual(V2);
+        if(cur_day != day() || cur_month != month() || cur_year != year()) {
+            day_of_week = weekday() == 1?7:weekday() - 1;
+            cur_day = day();
+            cur_month = month();
+            cur_year = year();
+            
+            sprintf(Date, "%02d/%02d/%04d",  cur_day, cur_month, cur_year);
+        }
+
+        //DEBUG_PRINTF("Checking schedule for %s %s:", weekdays[weekday() + dayadjustment].c_str(), Date);
+        if(schedule->isWeekdaySelected(day_of_week)) { //Time library starts week on Sunday, Blynk on Monday
+            //DEBUG_PRINTLN("\tACTIVE today!");
+            /*if (schedule->hasStartTime()) { // Process start time
+                DEBUG_PRINTF("\tStart: %02d:%02d:%02d", schedule->getStartHour(), schedule->getStartMinute(), schedule->getStartSecond());
+            }
+            if (schedule->hasStopTime()) { // Process stop time
+                DEBUG_PRINTF("\tStop: %02d:%02d:%02d", schedule->getStopHour(), schedule->getStopMinute(), schedule->getStopSecond());
+            }*/
+
+            // DEBUG_PRINTLN(String("Time zone offset: ") + schedule->getTZ_Offset()); // Get timezone offset (in seconds)
+
+            /*DEBUG_PRINTLN("Days of week:");
+            daysstring[0] = '\0';  // clear the string
+            for (int i = 1; i <= 7; i++) {  // Process weekdays (1. Mon, 2. Tue, 3. Wed, ...)
+                if (schedule->isWeekdaySelected(i)) {
+                    sprintf(daysstring, "%s%s, ", daysstring, weekdays[i].c_str());
+                }
+            } 
+            DEBUG_PRINTLN(daysstring);*/
+            nowseconds = ((hour() * 3600) + (minute() * 60) + second());
+            startsecondswd = (schedule->getStartHour() * 3600) + (schedule->getStartMinute() * 60) + schedule->getStartSecond();
+            stopsecondswd = (schedule->getStopHour() * 3600) + (schedule->getStopMinute() * 60) + schedule->getStopSecond();
+            BlynkTime now = BlynkTime(nowseconds);
+            if(nowseconds >= startsecondswd && nowseconds < stopsecondswd) {
+                if(!active) {
+                    active = true;
+                    DEBUG_PRINTF("\tSTARTED: %s %s at %02d:%02d:%02d", weekdays[day_of_week].c_str(), Date, now.hour(), now.minute(), now.second());
+                    setLED(1);
+                } /*else {
+                    BlynkTime stopping = BlynkTime(stopsecondswd - nowseconds);
+                    DEBUG_PRINTF("\tStopping in %d hours %d minutes and %d seconds.", stopping.hour(), stopping.minute(), stopping.second());
+                }*/
+            } else if(active && nowseconds > stopsecondswd) {
+                active = false;
+                DEBUG_PRINTF("\tSTOPPED: %s %s at %02d:%02d:%02d", weekdays[day_of_week].c_str(), Date, now.hour(), now.minute(), now.second());
+                setLED(0);          
+            } /*else if(nowseconds < startsecondswd) {
+                BlynkTime running_before = BlynkTime(startsecondswd - nowseconds);
+                DEBUG_PRINTF("\tRunning in %d hours %d minutes and %d seconds.", running_before.hour(), running_before.minute(), running_before.second());
+            } else {
+                BlynkTime running_after = BlynkTime(nowseconds - stopsecondswd);
+                DEBUG_PRINTF("\tRan %d hours %d minutes and %d seconds ago.", running_after.hour(), running_after.minute(), running_after.second());
+            }*/
+        } else {
+            //DEBUG_PRINTLN("\tINACTIVE today");
+        }
     }
     
-    updater.once_ms(LOOP_INTERVAL, time_loop);
+    scheduler.once_ms(LOOP_INTERVAL, time_loop);
 }
