@@ -58,6 +58,10 @@ int speed = 0;
 unsigned int avg_current = 0;
 int state = 0;
 
+int day_of_week;
+int cur_day;
+int cur_month;
+int cur_year;
 char Date[16];
 char Time[16];
 char daysstring[128];           // string to hold days of week
@@ -130,80 +134,66 @@ BLYNK_WRITE(V3) {
     setLED(param.asInt());
 }
 
-BLYNK_WRITE(V2) {  // Time Input as Schedule see here: https://community.blynk.cc/t/automatic-scheduler-esp-01-with-4-time-input-widgets/10658        
-    sprintf(Date, "%02d/%02d/%04d",  day(), month(), year());
-    sprintf(Time, "%02d:%02d:%02d", hour(), minute(), second());
-
+BLYNK_WRITE(V2) {  // Time Input as Schedule see here: https://community.blynk.cc/t/automatic-scheduler-esp-01-with-4-time-input-widgets/10658
+    static bool active = false;
     TimeInputParam t(param);
 
-    DEBUG_PRINT("Checked schedule at: ");
-    DEBUG_PRINTLN(Date);
-    DEBUG_PRINTLN(Time);
-    
-    int dayadjustment = -1;  
-    if(weekday() == 1) {
-        dayadjustment =  6; // needed for Sunday, Time library is day 1 and Blynk is day 7
+    if(cur_day != day() || cur_month != month() || cur_year != year()) {
+        day_of_week = weekday() == 1?7:weekday() - 1;
+        cur_day = day();
+        cur_month = month();
+        cur_year = year();
+        
+        sprintf(Date, "%02d/%02d/%04d",  cur_day, cur_month, cur_year);
     }
-    if(t.isWeekdaySelected(weekday() + dayadjustment)) { //Time library starts week on Sunday, Blynk on Monday
-        DEBUG_PRINTLN("ACTIVE today");
-        if (t.hasStartTime()) { // Process start time
-            DEBUG_PRINTLN(String("Start: ") + t.getStart());
+
+    //DEBUG_PRINTF("Checking schedule for %s %s:", weekdays[weekday() + dayadjustment].c_str(), Date);
+    if(t.isWeekdaySelected(day_of_week)) { //Time library starts week on Sunday, Blynk on Monday
+        //DEBUG_PRINTLN("\tACTIVE today!");
+        /*if (t.hasStartTime()) { // Process start time
+            DEBUG_PRINTF("\tStart: %02d:%02d:%02d", t.getStartHour(), t.getStartMinute(), t.getStartSecond());
         }
         if (t.hasStopTime()) { // Process stop time
-            DEBUG_PRINTLN(String("Stop : ") + t.getStop());
-        }
-    // DEBUG_PRINTLN(String("Time zone offset: ") + t.getTZ_Offset()); // Get timezone offset (in seconds)
+            DEBUG_PRINTF("\tStop: %02d:%02d:%02d", t.getStopHour(), t.getStopMinute(), t.getStopSecond());
+        }*/
 
-        DEBUG_PRINTLN("Days of week:");
+        // DEBUG_PRINTLN(String("Time zone offset: ") + t.getTZ_Offset()); // Get timezone offset (in seconds)
+
+        /*DEBUG_PRINTLN("Days of week:");
         daysstring[0] = '\0';  // clear the string
         for (int i = 1; i <= 7; i++) {  // Process weekdays (1. Mon, 2. Tue, 3. Wed, ...)
             if (t.isWeekdaySelected(i)) {
                 sprintf(daysstring, "%s%s, ", daysstring, weekdays[i].c_str());
             }
         } 
-        DEBUG_PRINTLN(daysstring);
+        DEBUG_PRINTLN(daysstring);*/
         nowseconds = ((hour() * 3600) + (minute() * 60) + second());
-        DEBUG_PRINTF("Time now in seconds: %ld\n", nowseconds);
-        startsecondswd = (t.getStartHour() * 3600) + (t.getStartMinute() * 60);
-        //Serial.println(startsecondswd);  // used for debugging
-        if(nowseconds >= startsecondswd) {    
-            DEBUG_PRINT("STARTED at");
-            DEBUG_PRINTLN(String(" ") + t.getStartHour() + ":" + t.getStartMinute());
-        
-            if(nowseconds <= startsecondswd + 90) { // 90s on 60s timer ensures 1 trigger command is sent
-                digitalWrite(LED, HIGH); // set LED ON
-                Blynk.virtualWrite(V2, 1);
-                // code here to switch the relay ON
-            }      
+        startsecondswd = (t.getStartHour() * 3600) + (t.getStartMinute() * 60) + t.getStartSecond();
+        stopsecondswd = (t.getStopHour() * 3600) + (t.getStopMinute() * 60) + t.getStopSecond();
+        BlynkTime now = BlynkTime(nowseconds);
+        if(nowseconds >= startsecondswd && nowseconds < stopsecondswd) {
+            if(!active) {
+                active = true;
+                DEBUG_PRINTF("\tSTARTED: %s %s at %02d:%02d:%02d", weekdays[day_of_week].c_str(), Date, now.hour(), now.minute(), now.second());
+                setLED(1);
+            } /*else {
+                BlynkTime stopping = BlynkTime(stopsecondswd - nowseconds);
+                DEBUG_PRINTF("\tStopping in %d hours %d minutes and %d seconds.", stopping.hour(), stopping.minute(), stopping.second());
+            }*/
+        } else if(active && nowseconds > stopsecondswd) {
+            active = false;
+            DEBUG_PRINTF("\tSTOPPED: %s %s at %02d:%02d:%02d", weekdays[day_of_week].c_str(), Date, now.hour(), now.minute(), now.second());
+            setLED(0);          
+        } /*else if(nowseconds < startsecondswd) {
+            BlynkTime running_before = BlynkTime(startsecondswd - nowseconds);
+            DEBUG_PRINTF("\tRunning in %d hours %d minutes and %d seconds.", running_before.hour(), running_before.minute(), running_before.second());
         } else {
-            DEBUG_PRINTLN("Device NOT STARTED today");
-        }
-        stopsecondswd = (t.getStopHour() * 3600) + (t.getStopMinute() * 60);
-        //Serial.println(stopsecondswd);  // used for debugging
-        if(nowseconds >= stopsecondswd) {
-            digitalWrite(LED, LOW); // set LED OFF
-            Blynk.virtualWrite(V2, 0);
-            DEBUG_PRINT("STOPPED at");
-            DEBUG_PRINTLN(String(" ") + t.getStopHour() + ":" + t.getStopMinute());
-        
-            if(nowseconds <= stopsecondswd + 90) { // 90s on 60s timer ensures 1 trigger command is sent
-                digitalWrite(LED, LOW); // set LED OFF
-                Blynk.virtualWrite(V2, 0);
-                // code here to switch the relay OFF
-            }              
-        } else {
-            if(nowseconds >= startsecondswd) {  
-                digitalWrite(LED, HIGH); // set LED ON 
-                Blynk.virtualWrite(V2, 1);
-                DEBUG_PRINTLN("is ON");
-            }          
-        }
+            BlynkTime running_after = BlynkTime(nowseconds - stopsecondswd);
+            DEBUG_PRINTF("\tRan %d hours %d minutes and %d seconds ago.", running_after.hour(), running_after.minute(), running_after.second());
+        }*/
     } else {
-        DEBUG_PRINTLN("Up to you INACTIVE today");
-        
-        // nothing to do today, check again in 30 SECONDS time    
+        //DEBUG_PRINTLN("\tINACTIVE today");
     }
-    DEBUG_PRINTLN();
 }
 
 static void setLED(int value) {
